@@ -1,5 +1,19 @@
+# ezexif
+
+Copy exif and tags from a photo to the clipboard.
+
+Download the pre-build binary for win10 from the [release](https://github.com/aben20807/ezexif/releases).
+
+## Demo
+
+![ezexif](https://user-images.githubusercontent.com/14831545/184575651-5403acfc-e46c-4056-a7cf-877aac785a88.gif)
+
+
 ## Build from source
 
++ Python 3.9.13
+
++ Windows powershell commands:
 ```powershell
 > python -m virtualenv venv
 > .\venv\Scripts\Activate.ps1
