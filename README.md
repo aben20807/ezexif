@@ -1,6 +1,6 @@
 # ezexif
 
-Copy exif and tags from a photo to the clipboard.
+Copy the exif from a photo and predefined tags to the clipboard.
 
 Download the pre-build binary for win10 from the [release](https://github.com/aben20807/ezexif/releases).
 
