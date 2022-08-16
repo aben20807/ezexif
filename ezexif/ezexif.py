@@ -68,7 +68,7 @@ def callback(event):
                 )  # LensModel has some \x00 char...
 
             # custom format
-            if key == "DateTime":
+            if key == "DateTimeOriginal":
                 value = value.replace(":", "/", 2)
             if key == "ExposureTime":
                 value = f"{Fraction(value).limit_denominator()} s"
