@@ -18,7 +18,8 @@ CONFIG = {
 
 # "tag name": "display name"
 NEEDED_EXIF = {
-    "DateTime": "Date time",
+    "FileName": "File name",
+    "DateTimeOriginal": "Date time",
     "Location": "Location",
     "Model": "Camera",
     "LensModel": "Lens model",
@@ -59,6 +60,8 @@ def callback(event):
             value = ""
             if key == "Location":  # locaiton is not a valid exif
                 value = "'Location'"
+            elif key == "FileName":
+                value = os.path.basename(image_path)
             else:
                 value = str(exif_result[key]).strip(
                     "\x00"
