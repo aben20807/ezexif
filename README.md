@@ -18,7 +18,7 @@ Download the pre-build binary for win10 from the [release](https://github.com/ab
 > python -m virtualenv venv
 > .\venv\Scripts\Activate.ps1
 > pip install tkinterdnd2 Pillow clipboard pyinstaller
-> pyinstaller -F -c --clean --collect-all tkinterdnd2 --add-data "ezexif.ico;." --icon=ezexif.ico .\ezexif\ezexif.py
+> pyinstaller -F -c --clean --collect-all tkinterdnd2 --icon=ezexif.ico .\ezexif\ezexif.py
 ```
 
 ## Icon credit
