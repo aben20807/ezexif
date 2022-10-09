@@ -73,6 +73,8 @@ def callback(event):
                 value = "'Location'"
             elif key == "FileName":
                 value = os.path.basename(image_path)
+            elif key not in exif_result.keys():
+                value = "<NO DATA>"
             else:
                 value = str(exif_result[key]).strip(
                     "\x00"
@@ -95,6 +97,10 @@ def callback(event):
 
     except Exception as e:
         print(f"Something wrong: {e}")
+        import pprint
+        if 'MakerNote' in exif_result.keys():
+            exif_result['MakerNote'] = ""
+        pprint.pprint(exif_result)
         clipboard.copy(f"Something wrong: {e}")
     finally:
         img.close()
