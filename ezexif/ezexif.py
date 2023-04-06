@@ -1,6 +1,7 @@
 import base64
 import os, sys
 from tkinter import *
+from tkinter import ttk
 import tkinter.font as tkFont
 from tkinterdnd2 import *
 from PIL import Image, ImageTk
@@ -12,8 +13,14 @@ import configparser
 # default configuration for generation first time
 CONFIG = {
     "Settings": {
-        "tags": "-\n#photography #photographylovers #photoshoot "
-        "#outdoors #nature #micro_lens #mushroom #菇 #成大 #榕園 #ncku"
+        "tag_curr": 0,
+        "tags_0": "-\n#photography #photographylovers #photoshoot "
+        "#outdoors #nature #micro_lens #mushroom #菇 #成大 #榕園 #ncku",
+        "tags_1": "-\n",
+        "tags_2": "-\n",
+        "tags_3": "-\n",
+        "tags_4": "-\n",
+        "exif2tag": "",
     }
 }
 
@@ -109,7 +116,7 @@ def extract_exif_and_copy(event):
             copy_str += f"{value}\n"
 
         # Append tags information
-        copy_str = copy_str + textbox_tags.get("1.0", "end-1c")
+        copy_str = copy_str + textbox_tags[int(CONFIG["Settings"]["tag_curr"])].get("1.0", "end-1c")
         print(copy_str)
         clipboard.copy(copy_str)
         print(f"> Copied to clipboard!")
@@ -126,8 +133,9 @@ def extract_exif_and_copy(event):
 
 
 def save_tags(event):
-    global tags_val
     tags_val = event.widget.get("1.0", "end-1c")
+    print("tags_val", tags_val)
+    # write_config()
 
 
 def get_config_path():
@@ -145,16 +153,21 @@ def read_config():
         comment_prefixes=";"
     )  # the tags startswith # may be see as comment
     config.read(get_config_path(), encoding="utf-8-sig")
-    CONFIG["Settings"]["tags"] = config.get("Settings", "tags")
-    print(CONFIG["Settings"]["tags"])
+    CONFIG["Settings"]["tag_curr"] = config.get("Settings", "tag_curr")
+    for i in range(5):
+        CONFIG["Settings"][f"tags_{i}"] = config.get("Settings", f"tags_{i}")
+    CONFIG["Settings"]["exif2tag"] = config.get("Settings", "exif2tag")
 
 
-def write_config(tags_val):
+def write_config():
     config = configparser.ConfigParser(
         comment_prefixes=";"
     )  # the tags startswith # may be see as comment
     config.read(get_config_path(), encoding="utf-8-sig")
-    config.set("Settings", "tags", tags_val)
+    config.set("Settings", "tag_curr", str(CONFIG["Settings"]["tag_curr"]))
+    for i in range(5):
+        config.set("Settings", f"tags_{i}", CONFIG["Settings"][f"tags_{i}"])
+    config.set("Settings", "exif2tag", CONFIG["Settings"]["exif2tag"])
     with open(get_config_path(), 'w', encoding="utf-8-sig") as configfile:
         config.write(configfile)
 
@@ -166,8 +179,22 @@ def gen_config():
         config.write(configfile)
 
 
+def combobox_callback(event):
+    tag_curr = CONFIG["Settings"]["tag_curr"]
+    textbox_tags[int(tag_curr)].pack_forget()
+    print("pack_forget", int(tag_curr))
+    tag_curr = combobox.get()
+    tag_curr = tag_curr if tag_curr != "exif2tag" else 5
+    CONFIG["Settings"]["tag_curr"] = tag_curr
+    # textbox_tags.delete(1.0,"end")
+    # textbox_tags[int(tag_curr)].insert("end-1c", CONFIG["Settings"][f"tags_{tag_curr}"])
+    textbox_tags[int(tag_curr)].pack()
+    print("pack", int(tag_curr), textbox_tags[int(tag_curr)].get("1.0", "end-1c"))
+    
+
+
 def on_closing():
-    write_config(tags_val)
+    write_config()
     ws.destroy()
 
 
@@ -177,6 +204,8 @@ def main():
     else:
         gen_config()
     print(f"Config: {CONFIG}")
+    # global tag_curr
+    tag_curr = CONFIG["Settings"]["tag_curr"]
 
     global ws
     ws = TkinterDnD.Tk()
@@ -195,25 +224,37 @@ def main():
     e_box.drop_target_register(DND_FILES)
     e_box.dnd_bind("<<Drop>>", extract_exif_and_copy)
 
+    # tag preset
+    lframe_tagset = LabelFrame(ws, text="", bg="#F5F5F5")
+    Label(lframe_tagset, text="tag set:", bg="#F5F5F5").pack(side=LEFT)
+    global combobox
+    combobox = ttk.Combobox(lframe_tagset,state= "readonly")
+    combobox['values']=('0', '1', '2', '3', '4', 'exif2tag')
+    combobox.current(tag_curr)
+    combobox.pack(side=RIGHT)
+    combobox.bind("<<ComboboxSelected>>", combobox_callback)
+    lframe_tagset.pack(fill=BOTH, expand=True, padx=10, pady=10)
+
     lframe = LabelFrame(ws, text="Instructions", bg="#F5F5F5")
     Label(
         lframe,
         bg="#F5F5F5",
         text="Drag your file in the text field.",
     ).pack(fill=BOTH, expand=True)
-
     # Text box for tags
     global textbox_tags
-    textbox_tags = CustomText(lframe, height=22, width=50)
-    global tags_val
-    tags_val = CONFIG["Settings"]["tags"]
-    textbox_tags.insert("end-1c", tags_val)
-    textbox_tags.pack(side=TOP)
-    textbox_tags.configure(font=tkFont.Font(family="Microsoft YaHei", size=10))
-    textbox_tags.drop_target_register(DND_FILES)
-    textbox_tags.dnd_bind("<<Drop>>", extract_exif_and_copy)
-    # store modified text to tags_val
-    textbox_tags.bind("<<TextModified>>", save_tags)
+    textbox_tags = [CustomText(lframe, height=22, width=50) for _ in range(6)]
+
+    # tags_val = CONFIG["Settings"][f"tags_{tag_curr}"]
+    for i in range(6):
+        tag_set_idx = f"tags_{i}" if i < 5 else "exif2tag"
+        textbox_tags[i].insert("end-1c", CONFIG["Settings"][tag_set_idx])
+        textbox_tags[i].configure(font=tkFont.Font(family="Microsoft YaHei", size=10))
+        textbox_tags[i].drop_target_register(DND_FILES)
+        textbox_tags[i].dnd_bind("<<Drop>>", extract_exif_and_copy)
+        # store modified text to tags_val
+        textbox_tags[i].bind("<<TextModified>>", save_tags)
+    textbox_tags[int(CONFIG["Settings"]["tag_curr"])].pack(side=TOP)
 
     lframe.pack(fill=BOTH, expand=True, padx=10, pady=10)
     # store tags_val to config file
