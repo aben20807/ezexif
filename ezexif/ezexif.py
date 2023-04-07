@@ -57,7 +57,12 @@ class CustomText(Text):
 
     def _proxy(self, command, *args):
         cmd = (self._orig, command) + args
-        result = self.tk.call(cmd)
+        try:
+            result = self.tk.call(cmd)
+        except Exception:
+            # avoid error (_tkinter.TclError: text doesn't contain any characters tagged with "sel")
+            # when copying Ref: https://stackoverflow.com/a/53418346
+            return None
         if command in ("insert", "delete", "replace"):
             self.event_generate("<<TextModified>>")
         return result
