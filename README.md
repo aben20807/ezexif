@@ -2,18 +2,18 @@
 
 Copy the exif from a photo and predefined tags to the clipboard.
 
-Download the pre-build binary for win10 from the [release](https://github.com/aben20807/ezexif/releases).
+Download the pre-built binary for Win10 from the [release](https://github.com/aben20807/ezexif/releases).
 
 ## Demo
 
-![ezexif](https://user-images.githubusercontent.com/14831545/184575651-5403acfc-e46c-4056-a7cf-877aac785a88.gif)
-
+![ezexif](https://user-images.githubusercontent.com/14831545/230545066-ec100126-a415-4285-9184-b21e8ffbae3f.gif)
 
 ## Build from source
 
 + Python 3.9.13
 
-+ Windows powershell commands:
++ Windows PowerShell commands:
+
 ```powershell
 > python -m virtualenv venv
 > .\venv\Scripts\Activate.ps1 # you may need 'Set-ExecutionPolicy RemoteSigned' before the command and run 'Set-ExecutionPolicy Restricted' after this command under the administrator mode
