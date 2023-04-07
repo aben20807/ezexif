@@ -14,8 +14,7 @@ import configparser
 CONFIG = {
     "Settings": {
         "tag_curr": 0,
-        "tags_0": "-\n#photography #photographylovers #photoshoot "
-        "#outdoors #nature #micro_lens #mushroom #菇 #成大 #榕園 #ncku",
+        "tags_0": "-\n#photography #photogram #photographylovers #photoshoot #naturephotography #naturelovers #natureshots #lovenature #nature #outdoors #nikonphotography #nikon #taiwan #taiwanphotography #成大 #ncku",
         "tags_1": "-\n",
         "tags_2": "-\n",
         "tags_3": "-\n",
@@ -87,7 +86,7 @@ def extract_exif_and_copy(event):
             return
 
         exif_result = {}
-        for (tag, value) in exif.items():
+        for tag, value in exif.items():
             key = TAGS.get(tag, tag)
             exif_result[key] = str(value)
 
@@ -116,7 +115,9 @@ def extract_exif_and_copy(event):
             copy_str += f"{value}\n"
 
         # Append tags information
-        copy_str = copy_str + textbox_tags[int(CONFIG["Settings"]["tag_curr"])].get("1.0", "end-1c")
+        copy_str = copy_str + textbox_tags[int(CONFIG["Settings"]["tag_curr"])].get(
+            "1.0", "end-1c"
+        )
         print(copy_str)
         clipboard.copy(copy_str)
         print(f"> Copied to clipboard!")
@@ -124,18 +125,19 @@ def extract_exif_and_copy(event):
     except Exception as e:
         print(f"Something wrong: {e}")
         import pprint
-        if 'MakerNote' in exif_result.keys():
-            exif_result['MakerNote'] = ""
+
+        if "MakerNote" in exif_result.keys():
+            exif_result["MakerNote"] = ""
         pprint.pprint(exif_result)
         clipboard.copy(f"Something wrong: {e}")
     finally:
         img.close()
 
 
-def save_tags(event):
+def update_tags(event):
     tags_val = event.widget.get("1.0", "end-1c")
-    print("tags_val", tags_val)
-    # write_config()
+    tag_curr = CONFIG["Settings"]["tag_curr"]
+    CONFIG["Settings"][f"tags_{tag_curr}"] = tags_val
 
 
 def get_config_path():
@@ -168,7 +170,7 @@ def write_config():
     for i in range(5):
         config.set("Settings", f"tags_{i}", CONFIG["Settings"][f"tags_{i}"])
     config.set("Settings", "exif2tag", CONFIG["Settings"]["exif2tag"])
-    with open(get_config_path(), 'w', encoding="utf-8-sig") as configfile:
+    with open(get_config_path(), "w", encoding="utf-8-sig") as configfile:
         config.write(configfile)
 
 
@@ -180,17 +182,14 @@ def gen_config():
 
 
 def combobox_callback(event):
-    tag_curr = CONFIG["Settings"]["tag_curr"]
-    textbox_tags[int(tag_curr)].pack_forget()
-    print("pack_forget", int(tag_curr))
+    tag_prev = CONFIG["Settings"]["tag_curr"]
+    tag_prev = tag_prev if tag_prev != "exif2tag" else 5
+    textbox_tags[int(tag_prev)].pack_forget()
+
     tag_curr = combobox.get()
     tag_curr = tag_curr if tag_curr != "exif2tag" else 5
     CONFIG["Settings"]["tag_curr"] = tag_curr
-    # textbox_tags.delete(1.0,"end")
-    # textbox_tags[int(tag_curr)].insert("end-1c", CONFIG["Settings"][f"tags_{tag_curr}"])
     textbox_tags[int(tag_curr)].pack()
-    print("pack", int(tag_curr), textbox_tags[int(tag_curr)].get("1.0", "end-1c"))
-    
 
 
 def on_closing():
@@ -210,7 +209,7 @@ def main():
     global ws
     ws = TkinterDnD.Tk()
     ws.title("ezexif")
-    ws.geometry("320x240")
+    ws.geometry("320x300")
     ws.config(bg="#F5F5F5")
     global app_path
     # convert base64 into icon data
@@ -226,10 +225,10 @@ def main():
 
     # tag preset
     lframe_tagset = LabelFrame(ws, text="", bg="#F5F5F5")
-    Label(lframe_tagset, text="tag set:", bg="#F5F5F5").pack(side=LEFT)
+    Label(lframe_tagset, text="tag preset:", bg="#F5F5F5").pack(side=LEFT)
     global combobox
-    combobox = ttk.Combobox(lframe_tagset,state= "readonly")
-    combobox['values']=('0', '1', '2', '3', '4', 'exif2tag')
+    combobox = ttk.Combobox(lframe_tagset, state="readonly")
+    combobox["values"] = ("0", "1", "2", "3", "4", "exif2tag")
     combobox.current(tag_curr)
     combobox.pack(side=RIGHT)
     combobox.bind("<<ComboboxSelected>>", combobox_callback)
@@ -253,7 +252,7 @@ def main():
         textbox_tags[i].drop_target_register(DND_FILES)
         textbox_tags[i].dnd_bind("<<Drop>>", extract_exif_and_copy)
         # store modified text to tags_val
-        textbox_tags[i].bind("<<TextModified>>", save_tags)
+        textbox_tags[i].bind("<<TextModified>>", update_tags)
     textbox_tags[int(CONFIG["Settings"]["tag_curr"])].pack(side=TOP)
 
     lframe.pack(fill=BOTH, expand=True, padx=10, pady=10)
