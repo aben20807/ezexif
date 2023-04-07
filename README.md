@@ -18,7 +18,7 @@ Download the pre-build binary for win10 from the [release](https://github.com/ab
 > python -m virtualenv venv
 > .\venv\Scripts\Activate.ps1 # you may need 'Set-ExecutionPolicy RemoteSigned' before the command and run 'Set-ExecutionPolicy Restricted' after this command under the administrator mode
 > pip install tkinterdnd2 Pillow clipboard pyinstaller
-> pyinstaller -F -c --clean --collect-all tkinterdnd2 --icon=ezexif.ico .\ezexif\ezexif.py
+> pyinstaller -F -c --clean --collect-all tkinterdnd2 --exclude-module black --icon=ezexif.ico .\ezexif\ezexif.py
 ```
 
 ## Icon credit

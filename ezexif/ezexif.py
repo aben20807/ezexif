@@ -116,8 +116,14 @@ def extract_exif_and_copy(event):
                 value += " mm"
             copy_str += f"{value}\n"
 
-            if value in exif2tag_dict.keys():
-                exif2tag_additional_tags += " " + exif2tag_dict[value]
+            try:
+                exif2tag_dict = json.loads(CONFIG["Settings"]["exif2tag"])
+                if value in exif2tag_dict.keys():
+                    exif2tag_additional_tags += " " + exif2tag_dict[value]
+            except Exception as e:
+                print(
+                    f"Something wrong when using json.loads: {e}\nCheck if your exif2tag is a valid dict"
+                )
 
         # Append tags information
         copy_str = (
@@ -212,9 +218,6 @@ def main():
         gen_config()
     print(f"Config: {CONFIG}")
 
-    global exif2tag_dict
-    exif2tag_dict = json.loads(CONFIG["Settings"]["exif2tag"])
-
     global ws
     ws = TkinterDnD.Tk()
     ws.title("ezexif")
@@ -251,7 +254,7 @@ def main():
     ).pack(fill=BOTH, expand=True)
 
     # Text box for tags, multiple boxes for different presets
-    # the last one, exif2tag, is used to set the mapping for 
+    # the last one, exif2tag, is used to set the mapping for
     # additional tag according to the camera
     global textbox_tags
     textbox_tags = [CustomText(lframe, height=22, width=50) for _ in range(6)]
