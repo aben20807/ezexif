@@ -9,6 +9,7 @@ from PIL.ExifTags import TAGS
 from fractions import Fraction
 import clipboard
 import configparser
+import json
 
 # default configuration for generation first time
 CONFIG = {
@@ -19,7 +20,7 @@ CONFIG = {
         "tags_2": "-\n",
         "tags_3": "-\n",
         "tags_4": "-\n",
-        "exif2tag": "",
+        "exif2tag": '{"NIKON Z 6_2":"#nikonz6ii","NIKKOR Z 24-70mm f/4 S":"#nikkorz2470f4 #nikkonz2470f4"}',
     }
 }
 
@@ -91,6 +92,7 @@ def extract_exif_and_copy(event):
             exif_result[key] = str(value)
 
         copy_str = ""
+        exif2tag_additional_tags = ""
         for key in NEEDED_EXIF.keys():
             copy_str += f"{NEEDED_EXIF[key]}: "
             value = ""
@@ -114,9 +116,14 @@ def extract_exif_and_copy(event):
                 value += " mm"
             copy_str += f"{value}\n"
 
+            if value in exif2tag_dict.keys():
+                exif2tag_additional_tags += " " + exif2tag_dict[value]
+
         # Append tags information
-        copy_str = copy_str + textbox_tags[int(CONFIG["Settings"]["tag_curr"])].get(
-            "1.0", "end-1c"
+        copy_str = (
+            copy_str
+            + textbox_tags[int(CONFIG["Settings"]["tag_curr"])].get("1.0", "end-1c")
+            + exif2tag_additional_tags
         )
         print(copy_str)
         clipboard.copy(copy_str)
@@ -136,8 +143,9 @@ def extract_exif_and_copy(event):
 
 def update_tags(event):
     tags_val = event.widget.get("1.0", "end-1c")
-    tag_curr = CONFIG["Settings"]["tag_curr"]
-    CONFIG["Settings"][f"tags_{tag_curr}"] = tags_val
+    tag_curr = int(CONFIG["Settings"]["tag_curr"])
+    tag_set_idx = f"tags_{tag_curr}" if tag_curr < 5 else "exif2tag"
+    CONFIG["Settings"][tag_set_idx] = tags_val
 
 
 def get_config_path():
@@ -203,8 +211,9 @@ def main():
     else:
         gen_config()
     print(f"Config: {CONFIG}")
-    # global tag_curr
-    tag_curr = CONFIG["Settings"]["tag_curr"]
+
+    global exif2tag_dict
+    exif2tag_dict = json.loads(CONFIG["Settings"]["exif2tag"])
 
     global ws
     ws = TkinterDnD.Tk()
@@ -229,7 +238,7 @@ def main():
     global combobox
     combobox = ttk.Combobox(lframe_tagset, state="readonly")
     combobox["values"] = ("0", "1", "2", "3", "4", "exif2tag")
-    combobox.current(tag_curr)
+    combobox.current(CONFIG["Settings"]["tag_curr"])
     combobox.pack(side=RIGHT)
     combobox.bind("<<ComboboxSelected>>", combobox_callback)
     lframe_tagset.pack(fill=BOTH, expand=True, padx=10, pady=10)
@@ -240,11 +249,13 @@ def main():
         bg="#F5F5F5",
         text="Drag your file in the text field.",
     ).pack(fill=BOTH, expand=True)
-    # Text box for tags
+
+    # Text box for tags, multiple boxes for different presets
+    # the last one, exif2tag, is used to set the mapping for 
+    # additional tag according to the camera
     global textbox_tags
     textbox_tags = [CustomText(lframe, height=22, width=50) for _ in range(6)]
 
-    # tags_val = CONFIG["Settings"][f"tags_{tag_curr}"]
     for i in range(6):
         tag_set_idx = f"tags_{i}" if i < 5 else "exif2tag"
         textbox_tags[i].insert("end-1c", CONFIG["Settings"][tag_set_idx])
