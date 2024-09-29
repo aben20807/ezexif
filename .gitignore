@@ -2,6 +2,7 @@
 *.spec
 env/
 venv/
+.venv/
 bin/
 .vscode/
 .vim/
