@@ -10,4 +10,6 @@ dependencies = [
     "pyinstaller>=6.16.0",
     "tkinterdnd2>=0.4.3",
     "geopy>=2.4.1",
+    "transformers>=4.43.0",
+    "torch>=2.3.0; platform_system == 'Windows'",
 ]

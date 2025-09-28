@@ -11,19 +11,24 @@ import base64
 import configparser
 import json
 import os
+import re
 import sys
+import threading
 import tkinter.font as tkFont
 from fractions import Fraction
 from tkinter import *  # noqa: F401,F403 - keep wildcard for Tk constants and widgets
 from tkinter import ttk
+from typing import List, Optional, Tuple
 
 import clipboard
+import torch
 from geopy.geocoders import Nominatim
 from geopy.point import Point
 from icon_data import ICON_BASE64
 from PIL import Image, ImageTk
 from PIL.ExifTags import GPSTAGS, TAGS
 from tkinterdnd2 import DND_FILES, TkinterDnD
+from transformers import BlipForConditionalGeneration, BlipProcessor
 
 # Default configuration used to generate a config file the first time.
 # The structure is a single "Settings" section with:
@@ -67,6 +72,8 @@ global_vars = {
     "icon_base64": ICON_BASE64,
     # Output Text widget to display the generated content
     "output_text": None,
+    # AI Assist toggle state (IntVar), 0=off, 1=on
+    "ai_var": None,
 }
 
 
@@ -227,6 +234,191 @@ def _reverse_geocode(lat: float, lon: float) -> str | None:
         return None
 
 
+# ---------------- AI Assist (BLIP) ----------------
+_blip_model = None
+_blip_proc = None
+
+
+def _load_blip_cpu():
+    global _blip_model, _blip_proc
+    if _blip_model is not None:
+        return _blip_model, _blip_proc
+    try:
+        print("Loading BLIP captioning (CPU)...")
+        _blip_proc = BlipProcessor.from_pretrained(
+            "Salesforce/blip-image-captioning-base"
+        )
+        _blip_model = BlipForConditionalGeneration.from_pretrained(
+            "Salesforce/blip-image-captioning-base"
+        )
+        try:
+            _blip_model.to("cpu").eval()
+        except Exception:
+            pass
+        try:
+            torch.set_num_threads(max(1, os.cpu_count() // 2))
+        except Exception:
+            pass
+        print("BLIP loaded.")
+    except Exception as e:
+        print(f"Failed to load BLIP: {e}")
+        _blip_model = None
+        _blip_proc = None
+    return _blip_model, _blip_proc
+
+
+_STOPWORDS = set(
+    "a an the and or but if then when while of at by for with about against between into through during before after above below to from up down in out on off over under again further then once here there all any both each few more most other some such no nor not only own same so than too very can will just don don’t should should’ve now i me my myself we our ours ourselves you your yours yourself yourselves he him his himself she her hers herself it its itself they them their theirs themselves what which who whom this that these those am is are was were be been being have has had having do does did doing would could ought i’m you’re he’s she’s it’s we’re they’re i’ve you’ve we’ve they’ve i’d you’d he’d she’d we’d they’d i’ll you’ll he’ll she’ll we’ll they’ll isn’t aren’t wasn’t weren’t hasn’t haven’t hadn’t doesn’t don’t didn’t won’t wouldn’t shan’t shouldn’t can’t cannot couldn’t mustn’t let’s that’s who’s what’s here’s there’s when’s where’s why’s how’s".replace(
+        "\n", " "
+    ).split()
+)
+
+
+def _blip_caption_and_tags(
+    pil_img: Image.Image,
+) -> Tuple[Optional[str], Optional[List[str]]]:
+    model, proc = _load_blip_cpu()
+    if model is None or proc is None:
+        return None, None
+    try:
+        with torch.inference_mode():
+            inputs = proc(images=pil_img, return_tensors="pt")
+            inputs = {k: v.to("cpu") for k, v in inputs.items()}
+            out_ids = model.generate(
+                **inputs,
+                max_new_tokens=20,
+                num_beams=3,
+                do_sample=False,
+                length_penalty=1.0,
+                repetition_penalty=1.1,
+            )
+            caption = proc.decode(out_ids[0], skip_special_tokens=True).strip()
+        if not caption:
+            return None, None
+        # naive tag extraction from caption
+        words = re.findall(r"[a-zA-Z0-9]+", caption.lower())
+        tags: List[str] = []
+        seen = set()
+        for w in words:
+            if len(w) < 3 or w in _STOPWORDS:
+                continue
+            if w not in seen:
+                seen.add(w)
+                tags.append(w)
+            if len(tags) >= 8:
+                break
+        return caption, tags
+    except Exception as e:
+        print(f"BLIP inference failed: {e}")
+        return None, None
+
+
+def _append_output_text(text: str):
+    out_widget = global_vars.get("output_text")
+    if out_widget is None:
+        return
+    try:
+        out_widget.config(state="normal")
+        # ensure a newline separation if there's existing text
+        if out_widget.get("1.0", "end-1c"):
+            out_widget.insert("end", "\n")
+        out_widget.insert("end", text)
+        out_widget.config(state="disabled")
+    except Exception as e:
+        print(f"Failed to append output text: {e}")
+
+
+def _run_ai_assist(image_path: str):
+    # Let the user know AI assist has started
+    if global_vars.get("ws") is not None:
+        global_vars["ws"].after(
+            0, lambda: _append_output_text("AI assist: generating...")
+        )
+    try:
+        start_ts = None
+        with Image.open(image_path) as img:
+            pil_img = img.convert("RGB")
+        # Downscale to speed up CPU inference while preserving aspect ratio
+        small = pil_img.copy()
+        try:
+            small.thumbnail((1024, 1024), Image.LANCZOS)
+        except Exception:
+            small.thumbnail((1024, 1024))
+        import time
+
+        start_ts = time.time()
+
+        # Progress reporter that posts to UI
+        def _report(stage: str):
+            msg_map = {
+                "encoding": "AI: encoding image...",
+                "encoded": "AI: image encoded",
+                "captioning": "AI: generating caption...",
+                "tagging": "AI: generating tags...",
+                "done": "AI: generation finished",
+            }
+            m = msg_map.get(stage)
+            if not m:
+                return
+            if global_vars.get("ws") is not None:
+                global_vars["ws"].after(0, lambda: _append_output_text(m))
+
+        state = {"done": False, "cancel": False}
+
+        def _watchdog():
+            if state["done"]:
+                return
+            state["cancel"] = True
+            if global_vars.get("ws") is not None:
+                global_vars["ws"].after(
+                    0, lambda: _append_output_text("AI assist: timed out after 60s")
+                )
+
+        # schedule a 60s timeout watchdog
+        if global_vars.get("ws") is not None:
+            global_vars["ws"].after(60000, _watchdog)
+        # BLIP-only path
+        _report("captioning")
+        caption, tags = _blip_caption_and_tags(small)
+        _report("done")
+        state["done"] = True
+        if state["cancel"]:
+            # Skip posting results if we already timed out
+            return
+        elapsed = None
+        try:
+            elapsed = time.time() - start_ts if start_ts else None
+        except Exception:
+            pass
+        if caption or tags:
+            ai_lines = []
+            if caption:
+                ai_lines.append(f"AI caption: {caption}")
+            if tags:
+                ai_lines.append("AI tags: " + " ".join(f"#{t}" for t in tags))
+            if elapsed is not None:
+                ai_lines.append(f"AI assist done in {elapsed:.1f}s")
+            text = "\n".join(ai_lines)
+            # marshal back to UI thread
+            if global_vars.get("ws") is not None:
+                global_vars["ws"].after(0, lambda: _append_output_text(text))
+            else:
+                print(text)
+        else:
+            # Nothing produced by the model
+            msg = "AI assist: no caption/tags produced."
+            if global_vars.get("ws") is not None:
+                global_vars["ws"].after(0, lambda: _append_output_text(msg))
+            else:
+                print(msg)
+    except Exception as e:
+        print(f"AI assist failed: {e}")
+        if global_vars.get("ws") is not None:
+            global_vars["ws"].after(
+                0, lambda: _append_output_text(f"AI assist failed: {e}")
+            )
+
+
 def _format_exif_value(
     key: str, value: str, image_path: str, exif_named: dict | None = None
 ) -> str:
@@ -342,6 +534,17 @@ def extract_exif_and_copy(event):
         print(copy_str)
         clipboard.copy(copy_str)
         print("> Copied to clipboard!")
+
+        # If AI assist is enabled, run it in the background to keep UI responsive
+        ai_var = global_vars.get("ai_var")
+        if ai_var is not None:
+            try:
+                if ai_var.get() == 1:
+                    threading.Thread(
+                        target=_run_ai_assist, args=(image_path,), daemon=True
+                    ).start()
+            except Exception:
+                pass
 
     except Exception as e:
         print(f"Something wrong: {e}")
@@ -475,6 +678,18 @@ def main():
     global_vars["combobox"].bind("<<ComboboxSelected>>", combobox_callback)
     lframe_tagset.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
+    # AI assist toggle
+    ai_frame = Frame(global_vars["ws"], bg="#F5F5F5")
+    global_vars["ai_var"] = IntVar(value=0)
+    Checkbutton(
+        ai_frame,
+        text="AI assist",
+        variable=global_vars["ai_var"],
+        bg="#F5F5F5",
+        anchor=W,
+    ).pack(side=LEFT)
+    ai_frame.pack(fill=BOTH, expand=False, padx=10, pady=(0, 0))
+
     # Instructions section + tag textboxes area
     lframe = LabelFrame(global_vars["ws"], text="Instructions", bg="#F5F5F5")
     Label(
@@ -487,7 +702,7 @@ def main():
     # the last one, exif2tag, is used to set the mapping for
     # additional tag according to the camera
     global_vars["textbox_tags"] = [
-        CustomText(lframe, height=8, width=50) for _ in range(6)
+        CustomText(lframe, height=4, width=50) for _ in range(6)
     ]
 
     for i in range(6):
@@ -507,7 +722,7 @@ def main():
 
     # Output viewer for generated text
     output_frame = LabelFrame(global_vars["ws"], text="Output", bg="#F5F5F5")
-    output_text = Text(output_frame, height=12, width=50, wrap="word")
+    output_text = Text(output_frame, height=20, width=50, wrap="word")
     output_text.configure(font=tkFont.Font(family="Microsoft YaHei", size=9))
     output_text.config(state="disabled")
     output_text.pack(fill=BOTH, expand=True)
