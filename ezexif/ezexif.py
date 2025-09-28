@@ -74,6 +74,8 @@ global_vars = {
     "output_text": None,
     # AI Assist toggle state (IntVar), 0=off, 1=on
     "ai_var": None,
+    # AI quality selection (StringVar): 'Fast' or 'Accurate'
+    "ai_quality_var": None,
 }
 
 
@@ -275,23 +277,44 @@ _STOPWORDS = set(
 
 
 def _blip_caption_and_tags(
-    pil_img: Image.Image,
+    pil_img: Image.Image, quality: str = "Fast"
 ) -> Tuple[Optional[str], Optional[List[str]]]:
     model, proc = _load_blip_cpu()
     if model is None or proc is None:
         return None, None
     try:
+        # Decode parameters: trade speed vs accuracy
+        if quality == "Accurate":
+            prompt_text = "a detailed photo of"
+            num_beams = 5
+            max_new = 30
+            length_penalty = 1.2
+            repetition_penalty = 1.1
+            no_repeat_ngram_size = 2
+        else:
+            prompt_text = None
+            num_beams = 3
+            max_new = 20
+            length_penalty = 1.0
+            repetition_penalty = 1.1
+            no_repeat_ngram_size = None
         with torch.inference_mode():
-            inputs = proc(images=pil_img, return_tensors="pt")
+            if prompt_text:
+                inputs = proc(images=pil_img, text=prompt_text, return_tensors="pt")
+            else:
+                inputs = proc(images=pil_img, return_tensors="pt")
             inputs = {k: v.to("cpu") for k, v in inputs.items()}
-            out_ids = model.generate(
-                **inputs,
-                max_new_tokens=20,
-                num_beams=3,
-                do_sample=False,
-                length_penalty=1.0,
-                repetition_penalty=1.1,
-            )
+            gen_kwargs = {
+                "max_new_tokens": max_new,
+                "num_beams": num_beams,
+                "do_sample": False,
+                "length_penalty": length_penalty,
+                "repetition_penalty": repetition_penalty,
+                "early_stopping": True,
+            }
+            if no_repeat_ngram_size:
+                gen_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
+            out_ids = model.generate(**inputs, **gen_kwargs)
             caption = proc.decode(out_ids[0], skip_special_tokens=True).strip()
         if not caption:
             return None, None
@@ -341,9 +364,25 @@ def _run_ai_assist(image_path: str):
         # Downscale to speed up CPU inference while preserving aspect ratio
         small = pil_img.copy()
         try:
-            small.thumbnail((1024, 1024), Image.LANCZOS)
+            target = (
+                512
+                if (
+                    global_vars.get("ai_quality_var")
+                    and global_vars["ai_quality_var"].get() == "Accurate"
+                )
+                else 384
+            )
+            small.thumbnail((target, target), Image.LANCZOS)
         except Exception:
-            small.thumbnail((1024, 1024))
+            target = (
+                512
+                if (
+                    global_vars.get("ai_quality_var")
+                    and global_vars["ai_quality_var"].get() == "Accurate"
+                )
+                else 384
+            )
+            small.thumbnail((target, target))
         import time
 
         start_ts = time.time()
@@ -379,7 +418,13 @@ def _run_ai_assist(image_path: str):
             global_vars["ws"].after(60000, _watchdog)
         # BLIP-only path
         _report("captioning")
-        caption, tags = _blip_caption_and_tags(small)
+        quality = "Fast"
+        if global_vars.get("ai_quality_var") is not None:
+            try:
+                quality = global_vars["ai_quality_var"].get()
+            except Exception:
+                quality = "Fast"
+        caption, tags = _blip_caption_and_tags(small, quality=quality)
         _report("done")
         state["done"] = True
         if state["cancel"]:
@@ -680,7 +725,7 @@ def main():
 
     # AI assist toggle
     ai_frame = Frame(global_vars["ws"], bg="#F5F5F5")
-    global_vars["ai_var"] = IntVar(value=0)
+    global_vars["ai_var"] = IntVar(value=1)  # checked by default
     Checkbutton(
         ai_frame,
         text="AI assist",
@@ -688,6 +733,18 @@ def main():
         bg="#F5F5F5",
         anchor=W,
     ).pack(side=LEFT)
+    # Quality selector
+    Label(ai_frame, text=" Quality:", bg="#F5F5F5").pack(side=LEFT)
+    global_vars["ai_quality_var"] = StringVar(value="Accurate")
+    ai_quality_combo = ttk.Combobox(
+        ai_frame,
+        state="readonly",
+        width=10,
+        textvariable=global_vars["ai_quality_var"],
+        values=("Fast", "Accurate"),
+    )
+    ai_quality_combo.current(1)  # default to "Accurate"
+    ai_quality_combo.pack(side=LEFT, padx=(4, 0))
     ai_frame.pack(fill=BOTH, expand=False, padx=10, pady=(0, 0))
 
     # Instructions section + tag textboxes area
