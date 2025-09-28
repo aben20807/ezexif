@@ -237,36 +237,64 @@ def _reverse_geocode(lat: float, lon: float) -> str | None:
 
 
 # ---------------- AI Assist (BLIP) ----------------
-_blip_model = None
-_blip_proc = None
+# Cache BLIP models by size (Base/Large)
+_blip_cache = {}
 
 
-def _load_blip_cpu():
-    global _blip_model, _blip_proc
-    if _blip_model is not None:
-        return _blip_model, _blip_proc
+def _load_blip_cpu(model_size: str = "Base"):
+    """Load BLIP captioning model on CPU.
+
+    model_size: "Base" or "Large". Falls back to Base on failure.
+    Returns a tuple (model, processor).
+    """
+    global _blip_cache
+    key = (model_size or "Base").title()
+    if key in _blip_cache:
+        return _blip_cache[key]
+    repo = (
+        "Salesforce/blip-image-captioning-large"
+        if key == "Large"
+        else "Salesforce/blip-image-captioning-base"
+    )
     try:
-        print("Loading BLIP captioning (CPU)...")
-        _blip_proc = BlipProcessor.from_pretrained(
-            "Salesforce/blip-image-captioning-base"
-        )
-        _blip_model = BlipForConditionalGeneration.from_pretrained(
-            "Salesforce/blip-image-captioning-base"
-        )
+        print(f"Loading BLIP ({key}) captioning (CPU) from {repo}...")
+        proc = BlipProcessor.from_pretrained(repo)
+        model = BlipForConditionalGeneration.from_pretrained(repo)
         try:
-            _blip_model.to("cpu").eval()
+            model.to("cpu").eval()
         except Exception:
             pass
         try:
+            # Use half of available threads for responsiveness
             torch.set_num_threads(max(1, os.cpu_count() // 2))
         except Exception:
             pass
+        _blip_cache[key] = (model, proc)
         print("BLIP loaded.")
+        return model, proc
     except Exception as e:
-        print(f"Failed to load BLIP: {e}")
-        _blip_model = None
-        _blip_proc = None
-    return _blip_model, _blip_proc
+        print(f"Failed to load BLIP {key}: {e}")
+        if key != "Base":
+            # Fallback to Base
+            try:
+                if "Base" in _blip_cache:
+                    return _blip_cache["Base"]
+                print("Falling back to BLIP Base...")
+                proc = BlipProcessor.from_pretrained(
+                    "Salesforce/blip-image-captioning-base"
+                )
+                model = BlipForConditionalGeneration.from_pretrained(
+                    "Salesforce/blip-image-captioning-base"
+                )
+                try:
+                    model.to("cpu").eval()
+                except Exception:
+                    pass
+                _blip_cache["Base"] = (model, proc)
+                return model, proc
+            except Exception as e2:
+                print(f"Failed to load BLIP Base during fallback: {e2}")
+        return None, None
 
 
 _STOPWORDS = set(
@@ -277,21 +305,28 @@ _STOPWORDS = set(
 
 
 def _blip_caption_and_tags(
-    pil_img: Image.Image, quality: str = "Fast"
+    pil_img: Image.Image, quality: str = "Fast", model_size: str = "Base"
 ) -> Tuple[Optional[str], Optional[List[str]]]:
-    model, proc = _load_blip_cpu()
+    model, proc = _load_blip_cpu(model_size)
     if model is None or proc is None:
         return None, None
     try:
         # Decode parameters: trade speed vs accuracy
-        if quality == "Accurate":
+        if quality == "Very accurate":
+            prompt_text = "a highly detailed professional photo of"
+            num_beams = 8
+            max_new = 60
+            length_penalty = 1.3
+            repetition_penalty = 1.05
+            no_repeat_ngram_size = 3
+        elif quality == "Accurate":
             prompt_text = "a detailed photo of"
             num_beams = 5
-            max_new = 30
+            max_new = 40
             length_penalty = 1.2
             repetition_penalty = 1.1
             no_repeat_ngram_size = 2
-        else:
+        else:  # Fast
             prompt_text = None
             num_beams = 3
             max_new = 20
@@ -318,17 +353,75 @@ def _blip_caption_and_tags(
             caption = proc.decode(out_ids[0], skip_special_tokens=True).strip()
         if not caption:
             return None, None
-        # naive tag extraction from caption
-        words = re.findall(r"[a-zA-Z0-9]+", caption.lower())
-        tags: List[str] = []
-        seen = set()
+        # Improved tag extraction from caption
+        words = re.findall(r"[a-zA-Z][a-zA-Z0-9\-]+", caption.lower())
+        # Filter stopwords, very short tokens, numeric-like, and common adjectives/colors
+        common_adjectives = {
+            "beautiful",
+            "stunning",
+            "amazing",
+            "gorgeous",
+            "wonderful",
+            "pretty",
+            "lovely",
+            "nice",
+            "soft",
+            "hard",
+            "blurred",
+            "blurry",
+            "sharp",
+            "vintage",
+            "classic",
+            "old",
+            "new",
+            "high",
+            "low",
+            "close",
+            "wide",
+        }
+        colors = {
+            "red",
+            "green",
+            "blue",
+            "yellow",
+            "orange",
+            "purple",
+            "violet",
+            "pink",
+            "brown",
+            "black",
+            "white",
+            "gray",
+            "grey",
+            "cyan",
+            "magenta",
+            "teal",
+            "golden",
+            "gold",
+            "silver",
+        }
+        filtered = []
         for w in words:
-            if len(w) < 3 or w in _STOPWORDS:
+            if len(w) < 3:
                 continue
+            if w in _STOPWORDS or w in common_adjectives or w in colors:
+                continue
+            if all(ch.isdigit() for ch in w):
+                continue
+            filtered.append(w)
+        # Deduplicate while preserving order
+        seen = set()
+        filtered_unique = []
+        for w in filtered:
             if w not in seen:
                 seen.add(w)
-                tags.append(w)
-            if len(tags) >= 8:
+                filtered_unique.append(w)
+        # Choose up to 12 tags; prefer nouns-ish tokens by heuristic (endings)
+        candidates = filtered_unique
+        tags: List[str] = []
+        for w in candidates:
+            tags.append(w)
+            if len(tags) >= 12:
                 break
         return caption, tags
     except Exception as e:
@@ -364,24 +457,31 @@ def _run_ai_assist(image_path: str):
         # Downscale to speed up CPU inference while preserving aspect ratio
         small = pil_img.copy()
         try:
-            target = (
-                512
-                if (
-                    global_vars.get("ai_quality_var")
-                    and global_vars["ai_quality_var"].get() == "Accurate"
-                )
-                else 384
+            # Decide target size based on quality and model size
+            q = (
+                global_vars.get("ai_quality_var").get()
+                if global_vars.get("ai_quality_var") is not None
+                else "Fast"
             )
+            msize = (
+                global_vars.get("ai_model_size_var").get()
+                if global_vars.get("ai_model_size_var") is not None
+                else "Base"
+            )
+            if q == "Very accurate":
+                target = 1280 if msize == "Large" else 1024
+            elif q == "Accurate":
+                target = 1024 if msize == "Large" else 896
+            else:
+                target = 512
             small.thumbnail((target, target), Image.LANCZOS)
         except Exception:
-            target = (
-                512
-                if (
-                    global_vars.get("ai_quality_var")
-                    and global_vars["ai_quality_var"].get() == "Accurate"
-                )
-                else 384
-            )
+            if q == "Very accurate":
+                target = 1280 if msize == "Large" else 1024
+            elif q == "Accurate":
+                target = 1024 if msize == "Large" else 896
+            else:
+                target = 512
             small.thumbnail((target, target))
         import time
 
@@ -409,13 +509,23 @@ def _run_ai_assist(image_path: str):
                 return
             state["cancel"] = True
             if global_vars.get("ws") is not None:
-                global_vars["ws"].after(
-                    0, lambda: _append_output_text("AI assist: timed out after 60s")
-                )
+                global_vars["ws"].after(0, lambda: _append_output_text(timeout_msg))
 
-        # schedule a 60s timeout watchdog
+        # schedule a timeout watchdog depending on quality/model size
+        # Base/Fast: 60s, Accurate: 90s, Very accurate or Large: 120s
+        timeout_ms = 60000
+        timeout_msg = "AI assist: timed out after 60s"
+        if q == "Accurate":
+            timeout_ms = 90000
+            timeout_msg = "AI assist: timed out after 90s"
+        if q == "Very accurate" or msize == "Large":
+            timeout_ms = 120000
+            timeout_msg = "AI assist: timed out after 120s"
         if global_vars.get("ws") is not None:
-            global_vars["ws"].after(60000, _watchdog)
+            # Announce settings
+            settings_line = f"AI: model={msize}, quality={q}, size~{target}px"
+            global_vars["ws"].after(0, lambda: _append_output_text(settings_line))
+            global_vars["ws"].after(timeout_ms, _watchdog)
         # BLIP-only path
         _report("captioning")
         quality = "Fast"
@@ -424,7 +534,14 @@ def _run_ai_assist(image_path: str):
                 quality = global_vars["ai_quality_var"].get()
             except Exception:
                 quality = "Fast"
-        caption, tags = _blip_caption_and_tags(small, quality=quality)
+        model_size = (
+            global_vars.get("ai_model_size_var").get()
+            if global_vars.get("ai_model_size_var") is not None
+            else "Base"
+        )
+        caption, tags = _blip_caption_and_tags(
+            small, quality=quality, model_size=model_size
+        )
         _report("done")
         state["done"] = True
         if state["cancel"]:
@@ -741,10 +858,22 @@ def main():
         state="readonly",
         width=10,
         textvariable=global_vars["ai_quality_var"],
-        values=("Fast", "Accurate"),
+        values=("Fast", "Accurate", "Very accurate"),
     )
-    ai_quality_combo.current(1)  # default to "Accurate"
+    ai_quality_combo.current(2)  # default to "Very accurate"
     ai_quality_combo.pack(side=LEFT, padx=(4, 0))
+    # Model size selector
+    Label(ai_frame, text=" Model:", bg="#F5F5F5").pack(side=LEFT, padx=(8, 0))
+    global_vars["ai_model_size_var"] = StringVar(value="Base")
+    ai_model_combo = ttk.Combobox(
+        ai_frame,
+        state="readonly",
+        width=8,
+        textvariable=global_vars["ai_model_size_var"],
+        values=("Base", "Large"),
+    )
+    ai_model_combo.current(1)  # default to "Large"
+    ai_model_combo.pack(side=LEFT, padx=(4, 0))
     ai_frame.pack(fill=BOTH, expand=False, padx=10, pady=(0, 0))
 
     # Instructions section + tag textboxes area
@@ -779,7 +908,7 @@ def main():
 
     # Output viewer for generated text
     output_frame = LabelFrame(global_vars["ws"], text="Output", bg="#F5F5F5")
-    output_text = Text(output_frame, height=20, width=50, wrap="word")
+    output_text = Text(output_frame, height=24, width=50, wrap="word")
     output_text.configure(font=tkFont.Font(family="Microsoft YaHei", size=9))
     output_text.config(state="disabled")
     output_text.pack(fill=BOTH, expand=True)
