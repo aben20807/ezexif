@@ -15,9 +15,9 @@ Download the pre-built binary for Win10 from the [release](https://github.com/ab
 + Windows PowerShell commands:
 
 ```powershell
-> python -m virtualenv .venv
-> .\.venv\Scripts\Activate.ps1 # you may need 'Set-ExecutionPolicy RemoteSigned' before the command and run 'Set-ExecutionPolicy Restricted' after this command under the administrator mode
-> pip install tkinterdnd2 Pillow clipboard pyinstaller
+> uv venv --python 3.12
+> .\.venv\Scripts\activate
+> uv pip install tkinterdnd2 Pillow clipboard pyinstaller
 > pyinstaller -F -c --clean --collect-all tkinterdnd2 --exclude-module black --icon=ezexif.ico .\ezexif\ezexif.py
 ```
 
