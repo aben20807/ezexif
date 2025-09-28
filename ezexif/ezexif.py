@@ -6,6 +6,7 @@ blocks and an exif-to-tag mapping for camera/lens-specific hashtags.
 Behavior note: This module is intentionally GUI-driven; refactors and comments
 added here do not change the original behavior or UI layout.
 """
+
 import base64
 import configparser
 import json
@@ -17,9 +18,11 @@ from tkinter import *  # noqa: F401,F403 - keep wildcard for Tk constants and wi
 from tkinter import ttk
 
 import clipboard
+from geopy.geocoders import Nominatim
+from geopy.point import Point
 from icon_data import ICON_BASE64
 from PIL import Image, ImageTk
-from PIL.ExifTags import TAGS
+from PIL.ExifTags import GPSTAGS, TAGS
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 # Default configuration used to generate a config file the first time.
@@ -75,6 +78,7 @@ class CustomText(Text):
 
     Ref: https://stackoverflow.com/a/40618152
     """
+
     def __init__(self, *args, **kwargs):
         """A text widget that report on internal widget commands"""
         Text.__init__(self, *args, **kwargs)
@@ -122,11 +126,110 @@ def _map_exif_to_named_dict(exif: dict) -> dict:
     result = {}
     for tag, value in exif.items():
         key = TAGS.get(tag, tag)
-        result[key] = str(value)
+        # Preserve raw values to keep structures like GPSInfo intact
+        result[key] = value
     return result
 
 
-def _format_exif_value(key: str, value: str, image_path: str) -> str:
+def _extract_gps_info(exif_named: dict) -> tuple | None:
+    """Extract decimal (lat, lon) from EXIF data if available.
+
+    EXIF stores GPS info in GPSInfo with rational tuples and N/E/S/W refs.
+    Returns (lat, lon) in decimal degrees or None if missing/invalid.
+    """
+    gps = exif_named.get("GPSInfo")
+    if not gps:
+        return None
+    # GPSInfo from PIL is a dict with numeric keys; map them using GPSTAGS
+    if isinstance(gps, dict):
+        gps_named = {GPSTAGS.get(k, k): v for k, v in gps.items()}
+    else:
+        return None
+
+    lat = gps_named.get("GPSLatitude")
+    lat_ref = gps_named.get("GPSLatitudeRef")
+    lon = gps_named.get("GPSLongitude")
+    lon_ref = gps_named.get("GPSLongitudeRef")
+    if not (lat and lon and lat_ref and lon_ref):
+        return None
+
+    def _to_deg(value):
+        # value is a tuple of rationals like ((deg_num, deg_den), (min_num,...), (sec_num,...)) or Fractions
+        try:
+            d, m, s = value
+
+            def _r(x):
+                try:
+                    return x[0] / x[1]
+                except Exception:
+                    return float(x)
+
+            return _r(d) + _r(m) / 60.0 + _r(s) / 3600.0
+        except Exception:
+            return None
+
+    lat_deg = _to_deg(lat)
+    lon_deg = _to_deg(lon)
+    if lat_deg is None or lon_deg is None:
+        return None
+    if lat_ref in ("S", "s"):
+        lat_deg = -lat_deg
+    if lon_ref in ("W", "w"):
+        lon_deg = -lon_deg
+    return (lat_deg, lon_deg)
+
+
+_geolocator: Nominatim | None = None
+
+
+def _reverse_geocode(lat: float, lon: float) -> str | None:
+    """Reverse geocode lat/lon to a human-readable location using Nominatim.
+
+    Returns a short, friendly display string or None on failure.
+    """
+    global _geolocator
+    try:
+        if _geolocator is None:
+            _geolocator = Nominatim(user_agent="ezexif")
+        # Request detailed address components; higher zoom favors street-level results
+        loc = _geolocator.reverse(
+            Point(lat, lon), language="en", zoom=18, addressdetails=True, timeout=5
+        )
+        if not loc:
+            return None
+        print(
+            f"Reverse geocode: {lat},{lon} -> {loc.address if hasattr(loc, 'address') else loc}"
+        )
+        addr = loc.raw.get("address", {}) if hasattr(loc, "raw") else {}
+        # Build a detailed label: house number + road + suburb/neighbourhood + city + state + postcode + country
+        house_no = addr.get("house_number")
+        road = addr.get("road") or addr.get("pedestrian") or addr.get("footway")
+        suburb = addr.get("suburb") or addr.get("neighbourhood") or addr.get("quarter")
+        city = (
+            addr.get("city")
+            or addr.get("town")
+            or addr.get("village")
+            or addr.get("hamlet")
+        )
+        state = addr.get("state") or addr.get("region")
+        postcode = addr.get("postcode")
+        country = addr.get("country")
+
+        road_components = [str(p).strip() for p in (house_no, road) if p]
+        road_part = " ".join(road_components) if road_components else None
+        parts = [p for p in [road_part, suburb, city, state, postcode, country] if p]
+        return (
+            ", ".join(parts)
+            if parts
+            else (loc.address if hasattr(loc, "address") else None)
+        )
+    except Exception:
+        return None
+
+
+def _format_exif_value(
+    key: str, value: str, image_path: str, exif_named: dict | None = None
+) -> str:
     """Apply original formatting rules for specific EXIF fields.
 
     - FileName comes from the dropped path
@@ -137,6 +240,15 @@ def _format_exif_value(key: str, value: str, image_path: str) -> str:
     """
     # location is not a valid exif in this tool
     if key == "Location":
+        # Attempt to get location from GPS info if available
+        if exif_named:
+            gps = _extract_gps_info(exif_named)
+            if gps:
+                lat, lon = gps
+                loc = _reverse_geocode(lat, lon)
+                if loc:
+                    return loc
+                return f"{lat:.6f}, {lon:.6f}"
         return "'Location'"
     if key == "FileName":
         return os.path.basename(image_path)
@@ -201,7 +313,9 @@ def extract_exif_and_copy(event):
                 value_display = "<NO DATA>"
             else:
                 raw_value = exif_result.get(key, "")
-                value_display = _format_exif_value(key, raw_value, image_path)
+                value_display = _format_exif_value(
+                    key, raw_value, image_path, exif_result
+                )
             copy_str += f"{value_display}\n"
             # Look up camera/lens specific extra tags
             exif2tag_additional_tags += _lookup_additional_tags(value_display)

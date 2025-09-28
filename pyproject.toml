@@ -9,4 +9,5 @@ dependencies = [
     "pillow>=11.3.0",
     "pyinstaller>=6.16.0",
     "tkinterdnd2>=0.4.3",
+    "geopy>=2.4.1",
 ]
