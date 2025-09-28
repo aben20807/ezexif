@@ -62,6 +62,8 @@ global_vars = {
     "app_path": "",
     # Base64-encoded icon data used for the window icon
     "icon_base64": ICON_BASE64,
+    # Output Text widget to display the generated content
+    "output_text": None,
 }
 
 
@@ -212,6 +214,17 @@ def extract_exif_and_copy(event):
             )
             + exif2tag_additional_tags
         )
+        # If an output viewer exists, show the generated text
+        out_widget = global_vars.get("output_text")
+        if out_widget is not None:
+            try:
+                out_widget.config(state="normal")
+                out_widget.delete("1.0", "end")
+                out_widget.insert("1.0", copy_str)
+                out_widget.config(state="disabled")
+            except Exception:
+                print("Failed to update output viewer")
+                pass
         print(copy_str)
         clipboard.copy(copy_str)
         print("> Copied to clipboard!")
@@ -315,7 +328,7 @@ def main():
     # Create main window with drag and drop support
     global_vars["ws"] = TkinterDnD.Tk()
     global_vars["ws"].title("ezexif")
-    global_vars["ws"].geometry("320x300")
+    global_vars["ws"].geometry("360x600")
     global_vars["ws"].config(bg="#F5F5F5")
     # convert base64 into icon data
     global_vars["ws"].iconphoto(
@@ -360,7 +373,7 @@ def main():
     # the last one, exif2tag, is used to set the mapping for
     # additional tag according to the camera
     global_vars["textbox_tags"] = [
-        CustomText(lframe, height=22, width=50) for _ in range(6)
+        CustomText(lframe, height=8, width=50) for _ in range(6)
     ]
 
     for i in range(6):
@@ -375,7 +388,17 @@ def main():
         global_vars["textbox_tags"][i].bind("<<TextModified>>", update_tags)
     global_vars["textbox_tags"][int(CONFIG["Settings"]["tag_curr"])].pack(side=TOP)
 
+    # Pack the instruction/tag frame (original layout restored)
     lframe.pack(fill=BOTH, expand=True, padx=10, pady=10)
+
+    # Output viewer for generated text
+    output_frame = LabelFrame(global_vars["ws"], text="Output", bg="#F5F5F5")
+    output_text = Text(output_frame, height=12, width=50, wrap="word")
+    output_text.configure(font=tkFont.Font(family="Microsoft YaHei", size=9))
+    output_text.config(state="disabled")
+    output_text.pack(fill=BOTH, expand=True)
+    output_frame.pack(fill=BOTH, expand=True, padx=10, pady=(0, 10))
+    global_vars["output_text"] = output_text
     # store tags_val to config file
     global_vars["ws"].protocol("WM_DELETE_WINDOW", on_closing)
     global_vars["ws"].mainloop()
