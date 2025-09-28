@@ -1,19 +1,32 @@
+"""
+ezexif: A tiny Tkinter GUI to drag-and-drop an image and copy formatted EXIF
+information plus user-defined tags to the clipboard. Supports preset tag
+blocks and an exif-to-tag mapping for camera/lens-specific hashtags.
+
+Behavior note: This module is intentionally GUI-driven; refactors and comments
+added here do not change the original behavior or UI layout.
+"""
 import base64
-import os, sys
-from tkinter import *
-from tkinter import ttk
-import tkinter.font as tkFont
-from tkinterdnd2 import *
-from PIL import Image, ImageTk
-from PIL.ExifTags import TAGS
-from fractions import Fraction
-import clipboard
 import configparser
 import json
+import os
+import sys
+import tkinter.font as tkFont
+from fractions import Fraction
+from tkinter import *  # noqa: F401,F403 - keep wildcard for Tk constants and widgets
+from tkinter import ttk
 
+import clipboard
 from icon_data import ICON_BASE64
+from PIL import Image, ImageTk
+from PIL.ExifTags import TAGS
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
-# default configuration for generation first time
+# Default configuration used to generate a config file the first time.
+# The structure is a single "Settings" section with:
+# - tag_curr: which preset is currently selected (0-4 or the string "exif2tag")
+# - tags_0..tags_4: 5 preset tag text blocks
+# - exif2tag: a JSON string mapping EXIF text values to additional tag strings
 CONFIG = {
     "Settings": {
         "tag_curr": 0,
@@ -26,7 +39,8 @@ CONFIG = {
     }
 }
 
-# "tag name": "display name"
+# EXIF fields of interest (ordered) and their display labels.
+# Key is the EXIF tag name; value is the label printed in the output.
 NEEDED_EXIF = {
     "FileName": "File name",
     "DateTimeOriginal": "Date time",
@@ -40,15 +54,25 @@ NEEDED_EXIF = {
 }
 
 global_vars = {
+    # Path of the last dropped image
     "img_path": None,
+    # List[Text]: tag text boxes for each preset (0-4) and one for exif2tag mapping (index 5)
     "textbox_tags": None,
+    # Base path for config file (differs in frozen vs script execution)
     "app_path": "",
+    # Base64-encoded icon data used for the window icon
     "icon_base64": ICON_BASE64,
 }
 
 
 class CustomText(Text):
-    # Ref: https://stackoverflow.com/a/40618152
+    """Text widget subclass that emits a virtual event when modified.
+
+    Creates a Tcl command proxy to intercept insert/delete/replace and generate
+    a custom event (<<TextModified>>). Useful for auto-saving edits.
+
+    Ref: https://stackoverflow.com/a/40618152
+    """
     def __init__(self, *args, **kwargs):
         """A text widget that report on internal widget commands"""
         Text.__init__(self, *args, **kwargs)
@@ -71,67 +95,116 @@ class CustomText(Text):
         return result
 
 
-def extract_exif_and_copy(event):
-    image_path = event.data
-    # Workaround for the folder with chinese word as end which causes wrong paths
-    if "\\" in image_path:
-        image_path = image_path.replace(os.sep, "/")
-    if image_path.startswith("{"):
-        image_path = image_path[1:]
-    if image_path.endswith("}"):
-        image_path = image_path[:-1]
+def normalize_dnd_path(raw_path: str) -> str:
+    """Normalize a file path coming from a DnD event.
 
+    Tk on Windows may wrap paths with braces when spaces are present (e.g. {C:\\a b} ).
+    Also handle backslash issues on some localized folders by converting to '/'.
+    """
+    path = raw_path
+    # Workaround for the folder with chinese word as end which causes wrong paths
+    if "\\" in path:
+        path = path.replace(os.sep, "/")
+    if path.startswith("{"):
+        path = path[1:]
+    if path.endswith("}"):
+        path = path[:-1]
+    return path
+
+
+def _map_exif_to_named_dict(exif: dict) -> dict:
+    """Convert PIL EXIF dict using numeric tag IDs to a dict keyed by tag names.
+
+    Values are stringified to keep downstream formatting simple.
+    """
+    result = {}
+    for tag, value in exif.items():
+        key = TAGS.get(tag, tag)
+        result[key] = str(value)
+    return result
+
+
+def _format_exif_value(key: str, value: str, image_path: str) -> str:
+    """Apply original formatting rules for specific EXIF fields.
+
+    - FileName comes from the dropped path
+    - DateTimeOriginal replaces the first two ':' with '/' for readability
+    - ExposureTime is represented as a simplified fraction (e.g., 1/200 s)
+    - FocalLength is suffixed with ' mm'
+    Other fields are passed through after stripping stray NULs.
+    """
+    # location is not a valid exif in this tool
+    if key == "Location":
+        return "'Location'"
+    if key == "FileName":
+        return os.path.basename(image_path)
+    # value cleanup (LensModel has some \x00 char...)
+    v = str(value).strip("\x00") if value is not None else "<NO DATA>"
+    if key == "DateTimeOriginal":
+        v = v.replace(":", "/", 2)
+    if key == "ExposureTime":
+        try:
+            v = f"{Fraction(v).limit_denominator()} s"
+        except Exception:
+            # keep original value if Fraction fails
+            v = f"{v}"
+    if key == "FocalLength":
+        v = f"{v} mm"
+    return v
+
+
+def _lookup_additional_tags(value: str) -> str:
+    """Return additional tag string from exif2tag mapping if value matches a key.
+
+    The mapping is stored as a JSON string in CONFIG["Settings"]["exif2tag"],
+    e.g. {"NIKON Z 6_2": "#nikon ..."}. When the formatted EXIF value exactly
+    matches a key, the corresponding tag string is appended to the output.
+    """
+    try:
+        exif2tag_dict = json.loads(CONFIG["Settings"]["exif2tag"])
+        if value in exif2tag_dict.keys():
+            return " " + exif2tag_dict[value]
+    except Exception as e:
+        print(
+            f"Something wrong when using json.loads: {e}\nCheck if your exif2tag is a valid dict"
+        )
+    return ""
+
+
+def extract_exif_and_copy(event):
+    """DnD callback: extract EXIF from dropped image, build text, and copy to clipboard."""
+    image_path = normalize_dnd_path(event.data)
     global_vars["img_path"] = image_path
     print(f"-\n> Open '{image_path}'")
 
+    exif_result = None
     try:
-        img = Image.open(image_path)
-        exif = img._getexif()
+        # 1) Load image and extract raw EXIF
+        with Image.open(image_path) as img:
+            exif = img._getexif()
 
         if exif is None:
-            print(f"Something wrong: exif is None")
+            print("Something wrong: exif is None")
             return
 
-        exif_result = {}
-        for tag, value in exif.items():
-            key = TAGS.get(tag, tag)
-            exif_result[key] = str(value)
+        # 2) Convert to human-readable keys
+        exif_result = _map_exif_to_named_dict(exif)
 
+        # 3) Build output lines in the desired order
         copy_str = ""
         exif2tag_additional_tags = ""
         for key in NEEDED_EXIF.keys():
             copy_str += f"{NEEDED_EXIF[key]}: "
-            value = ""
-            if key == "Location":  # locaiton is not a valid exif
-                value = "'Location'"
-            elif key == "FileName":
-                value = os.path.basename(image_path)
-            elif key not in exif_result.keys():
-                value = "<NO DATA>"
+            if key not in exif_result and key not in ("FileName", "Location"):
+                value_display = "<NO DATA>"
             else:
-                value = str(exif_result[key]).strip(
-                    "\x00"
-                )  # LensModel has some \x00 char...
+                raw_value = exif_result.get(key, "")
+                value_display = _format_exif_value(key, raw_value, image_path)
+            copy_str += f"{value_display}\n"
+            # Look up camera/lens specific extra tags
+            exif2tag_additional_tags += _lookup_additional_tags(value_display)
 
-            # custom format
-            if key == "DateTimeOriginal":
-                value = value.replace(":", "/", 2)
-            if key == "ExposureTime":
-                value = f"{Fraction(value).limit_denominator()} s"
-            if key == "FocalLength":
-                value += " mm"
-            copy_str += f"{value}\n"
-
-            try:
-                exif2tag_dict = json.loads(CONFIG["Settings"]["exif2tag"])
-                if value in exif2tag_dict.keys():
-                    exif2tag_additional_tags += " " + exif2tag_dict[value]
-            except Exception as e:
-                print(
-                    f"Something wrong when using json.loads: {e}\nCheck if your exif2tag is a valid dict"
-                )
-
-        # Append tags information
+        # 4) Append the current preset tags and any extra tags from the mapping
         copy_str = (
             copy_str
             + global_vars["textbox_tags"][int(CONFIG["Settings"]["tag_curr"])].get(
@@ -141,21 +214,22 @@ def extract_exif_and_copy(event):
         )
         print(copy_str)
         clipboard.copy(copy_str)
-        print(f"> Copied to clipboard!")
+        print("> Copied to clipboard!")
 
     except Exception as e:
         print(f"Something wrong: {e}")
         import pprint
 
-        if "MakerNote" in exif_result.keys():
-            exif_result["MakerNote"] = ""
-        pprint.pprint(exif_result)
+        if isinstance(exif_result, dict):
+            # Avoid dumping large binary content
+            if "MakerNote" in exif_result.keys():
+                exif_result["MakerNote"] = ""
+            pprint.pprint(exif_result)
         clipboard.copy(f"Something wrong: {e}")
-    finally:
-        img.close()
 
 
 def update_tags(event):
+    """Update the in-memory CONFIG when any tag textbox is edited."""
     tags_val = event.widget.get("1.0", "end-1c")
     tag_curr = int(CONFIG["Settings"]["tag_curr"])
     tag_set_idx = f"tags_{tag_curr}" if tag_curr < 5 else "exif2tag"
@@ -163,6 +237,11 @@ def update_tags(event):
 
 
 def get_config_path():
+    """Return the full path to ezexif_config.ini, handling frozen apps.
+
+    When bundled with PyInstaller (sys.frozen), the config lives next to the
+    executable; otherwise next to this source file.
+    """
     if getattr(sys, "frozen", False):
         global_vars["app_path"] = os.path.dirname(sys.executable)
     elif __file__:
@@ -174,7 +253,7 @@ def get_config_path():
 def read_config():
     config = configparser.ConfigParser(
         comment_prefixes=";"
-    )  # the tags startswith # may be see as comment
+    )  # Ensure '#' in tag text won't be treated as INI comments
     config.read(get_config_path(), encoding="utf-8-sig")
     CONFIG["Settings"]["tag_curr"] = config.get("Settings", "tag_curr")
     for i in range(5):
@@ -185,7 +264,7 @@ def read_config():
 def write_config():
     config = configparser.ConfigParser(
         comment_prefixes=";"
-    )  # the tags startswith # may be see as comment
+    )  # Ensure '#' in tag text won't be treated as INI comments
     config.read(get_config_path(), encoding="utf-8-sig")
     config.set("Settings", "tag_curr", str(CONFIG["Settings"]["tag_curr"]))
     for i in range(5):
@@ -196,6 +275,7 @@ def write_config():
 
 
 def gen_config():
+    """Create a fresh config file using the defaults in CONFIG."""
     config = configparser.ConfigParser()
     config.read_dict(CONFIG)
     with open(get_config_path(), "w", encoding="utf-8-sig") as configfile:
@@ -203,28 +283,36 @@ def gen_config():
 
 
 def combobox_callback(event):
+    """Switch visible textbox when the preset combobox changes.
+
+    Note: The special "exif2tag" entry maps to index 5 in textbox list.
+    The combobox returns strings; we convert to indices as needed.
+    """
     tag_prev = CONFIG["Settings"]["tag_curr"]
-    tag_prev = tag_prev if tag_prev != "exif2tag" else 5
-    global_vars["textbox_tags"][int(tag_prev)].pack_forget()
+    tag_prev_idx = 5 if tag_prev == "exif2tag" else int(tag_prev)
+    global_vars["textbox_tags"][tag_prev_idx].pack_forget()
 
     tag_curr = global_vars["combobox"].get()
-    tag_curr = tag_curr if tag_curr != "exif2tag" else 5
+    tag_curr_idx = 5 if tag_curr == "exif2tag" else int(tag_curr)
     CONFIG["Settings"]["tag_curr"] = tag_curr
-    global_vars["textbox_tags"][int(tag_curr)].pack()
+    global_vars["textbox_tags"][tag_curr_idx].pack()
 
 
 def on_closing():
+    """Persist config to disk and close the window."""
     write_config()
     global_vars["ws"].destroy()
 
 
 def main():
+    # Load or create configuration on startup
     if os.path.exists(get_config_path()):
         read_config()
     else:
         gen_config()
     print(f"Config: {CONFIG}")
 
+    # Create main window with drag and drop support
     global_vars["ws"] = TkinterDnD.Tk()
     global_vars["ws"].title("ezexif")
     global_vars["ws"].geometry("320x300")
@@ -234,6 +322,7 @@ def main():
         True, ImageTk.PhotoImage(data=base64.b64decode(global_vars["icon_base64"]))
     )
 
+    # Input field that accepts DND for image path
     var_img_path = StringVar()
     Label(global_vars["ws"], text="Path of the Image", bg="#F5F5F5").pack(
         anchor=NW, padx=10
@@ -244,15 +333,22 @@ def main():
     e_box.dnd_bind("<<Drop>>", extract_exif_and_copy)
 
     # tag preset
+    # Combobox used to switch among 5 tag presets or the exif2tag mapping editor
     lframe_tagset = LabelFrame(global_vars["ws"], text="", bg="#F5F5F5")
     Label(lframe_tagset, text="tag preset:", bg="#F5F5F5").pack(side=LEFT)
     global_vars["combobox"] = ttk.Combobox(lframe_tagset, state="readonly")
     global_vars["combobox"]["values"] = ("0", "1", "2", "3", "4", "exif2tag")
-    global_vars["combobox"].current(CONFIG["Settings"]["tag_curr"])
+    # Ensure index is int for ttk.Combobox.current
+    try:
+        _curr_index = 5 if CONFIG["Settings"]["tag_curr"] == "exif2tag" else int(CONFIG["Settings"]["tag_curr"])  # type: ignore[arg-type]
+    except Exception:
+        _curr_index = 0
+    global_vars["combobox"].current(_curr_index)
     global_vars["combobox"].pack(side=RIGHT)
     global_vars["combobox"].bind("<<ComboboxSelected>>", combobox_callback)
     lframe_tagset.pack(fill=BOTH, expand=True, padx=10, pady=10)
 
+    # Instructions section + tag textboxes area
     lframe = LabelFrame(global_vars["ws"], text="Instructions", bg="#F5F5F5")
     Label(
         lframe,
