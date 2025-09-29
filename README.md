@@ -21,6 +21,10 @@ Download the pre-built binary for Win10 from the [release](https://github.com/ab
 > pyinstaller -F -c --clean --collect-all tkinterdnd2 --exclude-module black --icon=ezexif.ico .\ezexif\ezexif.py
 ```
 
+```powershell
+> uv run .\ezexif\ezexif.py
+```
+
 ## Icon credit
 
 The [icon (ezexif.ico)](https://icon-icons.com/icon/Document-Image-images-picture/82883) is from [Madeby kking](https://icon-icons.com/users/lUybzhSQf3kZ7FimJzYlO/icon-sets/) who shares it under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)

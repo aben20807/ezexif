@@ -89,9 +89,8 @@ class CustomText(Text):
     """
 
     def __init__(self, *args, **kwargs):
-        """A text widget that report on internal widget commands"""
+        """A text widget that reports on internal widget commands."""
         Text.__init__(self, *args, **kwargs)
-
         # create a proxy for the underlying widget
         self._orig = self._w + "_orig"
         self.tk.call("rename", self._w, self._orig)
@@ -111,50 +110,50 @@ class CustomText(Text):
 
 
 def normalize_dnd_path(raw_path: str) -> str:
-    """Normalize a file path coming from a DnD event.
-
-    Tk on Windows may wrap paths with braces when spaces are present (e.g. {C:\\a b} ).
-    Also handle backslash issues on some localized folders by converting to '/'.
-    """
-    path = raw_path
-    # Workaround for the folder with chinese word as end which causes wrong paths
-    if "\\" in path:
-        path = path.replace(os.sep, "/")
-    if path.startswith("{"):
-        path = path[1:]
-    if path.endswith("}"):
-        path = path[:-1]
+    """Normalize a file path coming from a DnD event (Windows braces, quotes)."""
+    path = raw_path or ""
+    path = path.strip()
+    if path.startswith("{") and path.endswith("}"):
+        path = path[1:-1]
+    if (path.startswith('"') and path.endswith('"')) or (
+        path.startswith("'") and path.endswith("'")
+    ):
+        path = path[1:-1]
+    # Normalize backslashes
+    if os.name == "nt":
+        path = path.replace("\\\\", "\\")
     return path
 
 
-def _map_exif_to_named_dict(exif: dict) -> dict:
-    """Convert PIL EXIF dict using numeric tag IDs to a dict keyed by tag names.
-
-    Values are stringified to keep downstream formatting simple.
-    """
+def _map_exif_to_named_dict(exif: dict | None) -> dict:
+    """Convert a raw EXIF dict with numeric keys to human-readable tag names."""
+    if not exif:
+        return {}
+    try:
+        from PIL.ExifTags import TAGS
+    except Exception:
+        TAGS = {}
     result = {}
     for tag, value in exif.items():
         key = TAGS.get(tag, tag)
-        # Preserve raw values to keep structures like GPSInfo intact
         result[key] = value
     return result
 
 
-def _extract_gps_info(exif_named: dict) -> tuple | None:
-    """Extract decimal (lat, lon) from EXIF data if available.
-
-    EXIF stores GPS info in GPSInfo with rational tuples and N/E/S/W refs.
-    Returns (lat, lon) in decimal degrees or None if missing/invalid.
-    """
+def _extract_gps_info(exif_named: dict) -> Optional[Tuple[float, float]]:
+    """Extract latitude/longitude in decimal degrees from EXIF dict."""
+    if not exif_named or "GPSInfo" not in exif_named:
+        return None
     gps = exif_named.get("GPSInfo")
-    if not gps:
+    if not isinstance(gps, dict):
         return None
-    # GPSInfo from PIL is a dict with numeric keys; map them using GPSTAGS
-    if isinstance(gps, dict):
-        gps_named = {GPSTAGS.get(k, k): v for k, v in gps.items()}
-    else:
-        return None
+    # Map numeric gps keys to names
+    try:
+        from PIL.ExifTags import GPSTAGS
 
+        gps_named = {GPSTAGS.get(k, k): v for k, v in gps.items()}
+    except Exception:
+        gps_named = gps
     lat = gps_named.get("GPSLatitude")
     lat_ref = gps_named.get("GPSLatitudeRef")
     lon = gps_named.get("GPSLongitude")
@@ -162,33 +161,32 @@ def _extract_gps_info(exif_named: dict) -> tuple | None:
     if not (lat and lon and lat_ref and lon_ref):
         return None
 
-    def _to_deg(value):
-        # value is a tuple of rationals like ((deg_num, deg_den), (min_num,...), (sec_num,...)) or Fractions
+    def to_deg(value):
         try:
             d, m, s = value
 
-            def _r(x):
+            def r(x):
                 try:
                     return x[0] / x[1]
                 except Exception:
                     return float(x)
 
-            return _r(d) + _r(m) / 60.0 + _r(s) / 3600.0
+            return r(d) + r(m) / 60.0 + r(s) / 3600.0
         except Exception:
             return None
 
-    lat_deg = _to_deg(lat)
-    lon_deg = _to_deg(lon)
-    if lat_deg is None or lon_deg is None:
+    lat_d = to_deg(lat)
+    lon_d = to_deg(lon)
+    if lat_d is None or lon_d is None:
         return None
-    if lat_ref in ("S", "s"):
-        lat_deg = -lat_deg
-    if lon_ref in ("W", "w"):
-        lon_deg = -lon_deg
-    return (lat_deg, lon_deg)
+    if str(lat_ref).upper() == "S":
+        lat_d = -lat_d
+    if str(lon_ref).upper() == "W":
+        lon_d = -lon_d
+    return (lat_d, lon_d)
 
 
-_geolocator: Nominatim | None = None
+_geolocator = None
 
 
 def _reverse_geocode(lat: float, lon: float) -> str | None:
@@ -315,21 +313,21 @@ def _blip_caption_and_tags(
         if quality == "Very accurate":
             prompt_text = "a highly detailed professional photo of"
             num_beams = 8
-            max_new = 60
+            max_new = 70
             length_penalty = 1.3
             repetition_penalty = 1.05
             no_repeat_ngram_size = 3
         elif quality == "Accurate":
             prompt_text = "a detailed photo of"
             num_beams = 5
-            max_new = 40
+            max_new = 50
             length_penalty = 1.2
             repetition_penalty = 1.1
             no_repeat_ngram_size = 2
         else:  # Fast
             prompt_text = None
             num_beams = 3
-            max_new = 20
+            max_new = 24
             length_penalty = 1.0
             repetition_penalty = 1.1
             no_repeat_ngram_size = None
@@ -351,6 +349,19 @@ def _blip_caption_and_tags(
                 gen_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
             out_ids = model.generate(**inputs, **gen_kwargs)
             caption = proc.decode(out_ids[0], skip_special_tokens=True).strip()
+        # Ensure the prompt_text itself is not included in the final caption
+        if prompt_text and caption:
+            try:
+                caption = re.sub(
+                    rf"^\s*{re.escape(prompt_text)}\s*[:,-]*\s*",
+                    "",
+                    caption,
+                    flags=re.IGNORECASE,
+                ).strip()
+            except Exception:
+                # Fallback: simple prefix check
+                if caption.lower().startswith(prompt_text.lower()):
+                    caption = caption[len(prompt_text) :].lstrip(" :,-")
         if not caption:
             return None, None
         # Improved tag extraction from caption
@@ -641,6 +652,8 @@ def _lookup_additional_tags(value: str) -> str:
 
 def extract_exif_and_copy(event):
     """DnD callback: extract EXIF from dropped image, build text, and copy to clipboard."""
+    from PIL import Image
+
     image_path = normalize_dnd_path(event.data)
     global_vars["img_path"] = image_path
     print(f"-\n> Open '{image_path}'")
