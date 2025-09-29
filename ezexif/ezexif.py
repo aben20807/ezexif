@@ -21,14 +21,13 @@ from tkinter import ttk
 from typing import List, Optional, Tuple
 
 import clipboard
-import torch
 from geopy.geocoders import Nominatim
 from geopy.point import Point
 from icon_data import ICON_BASE64
 from PIL import Image, ImageTk
 from PIL.ExifTags import GPSTAGS, TAGS
 from tkinterdnd2 import DND_FILES, TkinterDnD
-from transformers import BlipForConditionalGeneration, BlipProcessor
+## transformers are imported lazily in _load_blip_cpu to allow AI-less builds
 
 # Default configuration used to generate a config file the first time.
 # The structure is a single "Settings" section with:
@@ -249,6 +248,16 @@ def _load_blip_cpu(model_size: str = "Base"):
     key = (model_size or "Base").title()
     if key in _blip_cache:
         return _blip_cache[key]
+    # Lazy import heavy deps via importlib to avoid bundling when excluded
+    import importlib
+    try:
+        transformers = importlib.import_module("transformers")
+        BlipForConditionalGeneration = getattr(transformers, "BlipForConditionalGeneration")
+        BlipProcessor = getattr(transformers, "BlipProcessor")
+        torch = importlib.import_module("torch")
+    except Exception:
+        print("AI modules not available (transformers/torch). BLIP disabled.")
+        return None, None
     repo = (
         "Salesforce/blip-image-captioning-large"
         if key == "Large"
@@ -331,12 +340,23 @@ def _blip_caption_and_tags(
             length_penalty = 1.0
             repetition_penalty = 1.1
             no_repeat_ngram_size = None
-        with torch.inference_mode():
+        # Use torch inference context if available
+        try:
+            import importlib as _il
+            _torch = _il.import_module("torch")
+            ctx = _torch.inference_mode()
+        except Exception:
+            from contextlib import nullcontext
+            ctx = nullcontext()
+        with ctx:
             if prompt_text:
                 inputs = proc(images=pil_img, text=prompt_text, return_tensors="pt")
             else:
                 inputs = proc(images=pil_img, return_tensors="pt")
-            inputs = {k: v.to("cpu") for k, v in inputs.items()}
+            try:
+                inputs = {k: v.to("cpu") for k, v in inputs.items()}
+            except Exception:
+                pass
             gen_kwargs = {
                 "max_new_tokens": max_new,
                 "num_beams": num_beams,

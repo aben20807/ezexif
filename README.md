@@ -10,15 +10,31 @@ Download the pre-built binary for Win10 from the [release](https://github.com/ab
 
 ## Build from source
 
-+ Python 3.9.13
++ Python 3.12 (project requires >=3.12)
 
 + Windows PowerShell commands:
 
 ```powershell
-> uv venv --python 3.12
-> .\.venv\Scripts\activate
-> uv pip install tkinterdnd2 Pillow clipboard pyinstaller
-> pyinstaller -F -c --clean --collect-all tkinterdnd2 --exclude-module black --icon=ezexif.ico .\ezexif\ezexif.py
+# Create & activate venv
+uv venv --python 3.12
+.\.venv\Scripts\activate
+
+# Install runtime/build deps declared in pyproject
+uv pip install -e .
+
+# Option A: PyInstaller (simple, larger exe)
+pyinstaller -F -c --clean --collect-all tkinterdnd2 --exclude-module black --icon=ezexif.ico .\ezexif\ezexif.py
+
+# Option B: Nuitka (smaller/faster) — install Nuitka first
+uv pip install nuitka
+# Optional: install UPX for better compression (one of the following)
+winget install --id UPX.UPX -e
+# scoop install upx
+# choco install upx
+
+# Then run one of the provided scripts
+./build_lite.ps1   # excludes AI libs (smallest)
+./build_full.ps1   # includes AI libs (BLIP)
 ```
 
 ```powershell
