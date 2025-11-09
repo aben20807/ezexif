@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ezexif"
 version = "2.0.0"
@@ -13,3 +17,8 @@ dependencies = [
     "transformers>=4.43.0",
     "torch>=2.3.0; platform_system == 'Windows'",
 ]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ezexif*"]
+exclude = ["tmp*", "build*", "dist*"]

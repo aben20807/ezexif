@@ -11,10 +11,13 @@ import base64
 import configparser
 import json
 import os
+import pprint
 import re
 import sys
 import threading
+import time
 import tkinter.font as tkFont
+from contextlib import nullcontext
 from fractions import Fraction
 from tkinter import *  # noqa: F401,F403 - keep wildcard for Tk constants and widgets
 from tkinter import ttk
@@ -27,7 +30,18 @@ from icon_data import ICON_BASE64
 from PIL import Image, ImageTk
 from PIL.ExifTags import GPSTAGS, TAGS
 from tkinterdnd2 import DND_FILES, TkinterDnD
-## transformers are imported lazily in _load_blip_cpu to allow AI-less builds
+
+# AI imports: optional, gracefully disabled if not available
+try:
+    import torch
+    from transformers import BlipForConditionalGeneration, BlipProcessor
+
+    AI_AVAILABLE = True
+except ImportError:
+    torch = None
+    BlipForConditionalGeneration = None
+    BlipProcessor = None
+    AI_AVAILABLE = False
 
 # Default configuration used to generate a config file the first time.
 # The structure is a single "Settings" section with:
@@ -128,10 +142,6 @@ def _map_exif_to_named_dict(exif: dict | None) -> dict:
     """Convert a raw EXIF dict with numeric keys to human-readable tag names."""
     if not exif:
         return {}
-    try:
-        from PIL.ExifTags import TAGS
-    except Exception:
-        TAGS = {}
     result = {}
     for tag, value in exif.items():
         key = TAGS.get(tag, tag)
@@ -147,12 +157,7 @@ def _extract_gps_info(exif_named: dict) -> Optional[Tuple[float, float]]:
     if not isinstance(gps, dict):
         return None
     # Map numeric gps keys to names
-    try:
-        from PIL.ExifTags import GPSTAGS
-
-        gps_named = {GPSTAGS.get(k, k): v for k, v in gps.items()}
-    except Exception:
-        gps_named = gps
+    gps_named = {GPSTAGS.get(k, k): v for k, v in gps.items()}
     lat = gps_named.get("GPSLatitude")
     lat_ref = gps_named.get("GPSLatitudeRef")
     lon = gps_named.get("GPSLongitude")
@@ -244,20 +249,13 @@ def _load_blip_cpu(model_size: str = "Base"):
     model_size: "Base" or "Large". Falls back to Base on failure.
     Returns a tuple (model, processor).
     """
+    if not AI_AVAILABLE:
+        print("AI modules not available (transformers/torch). BLIP disabled.")
+        return None, None
     global _blip_cache
     key = (model_size or "Base").title()
     if key in _blip_cache:
         return _blip_cache[key]
-    # Lazy import heavy deps via importlib to avoid bundling when excluded
-    import importlib
-    try:
-        transformers = importlib.import_module("transformers")
-        BlipForConditionalGeneration = getattr(transformers, "BlipForConditionalGeneration")
-        BlipProcessor = getattr(transformers, "BlipProcessor")
-        torch = importlib.import_module("torch")
-    except Exception:
-        print("AI modules not available (transformers/torch). BLIP disabled.")
-        return None, None
     repo = (
         "Salesforce/blip-image-captioning-large"
         if key == "Large"
@@ -342,11 +340,8 @@ def _blip_caption_and_tags(
             no_repeat_ngram_size = None
         # Use torch inference context if available
         try:
-            import importlib as _il
-            _torch = _il.import_module("torch")
-            ctx = _torch.inference_mode()
+            ctx = torch.inference_mode()
         except Exception:
-            from contextlib import nullcontext
             ctx = nullcontext()
         with ctx:
             if prompt_text:
@@ -514,8 +509,6 @@ def _run_ai_assist(image_path: str):
             else:
                 target = 512
             small.thumbnail((target, target))
-        import time
-
         start_ts = time.time()
 
         # Progress reporter that posts to UI
@@ -672,8 +665,6 @@ def _lookup_additional_tags(value: str) -> str:
 
 def extract_exif_and_copy(event):
     """DnD callback: extract EXIF from dropped image, build text, and copy to clipboard."""
-    from PIL import Image
-
     image_path = normalize_dnd_path(event.data)
     global_vars["img_path"] = image_path
     print(f"-\n> Open '{image_path}'")
@@ -743,8 +734,6 @@ def extract_exif_and_copy(event):
 
     except Exception as e:
         print(f"Something wrong: {e}")
-        import pprint
-
         if isinstance(exif_result, dict):
             # Avoid dumping large binary content
             if "MakerNote" in exif_result.keys():
@@ -875,38 +864,53 @@ def main():
 
     # AI assist toggle
     ai_frame = Frame(global_vars["ws"], bg="#F5F5F5")
-    global_vars["ai_var"] = IntVar(value=1)  # checked by default
-    Checkbutton(
+    # Set initial value based on AI availability
+    global_vars["ai_var"] = IntVar(value=1 if AI_AVAILABLE else 0)
+    ai_check = Checkbutton(
         ai_frame,
         text="AI assist",
         variable=global_vars["ai_var"],
         bg="#F5F5F5",
         anchor=W,
-    ).pack(side=LEFT)
+    )
+    ai_check.pack(side=LEFT)
+    # Disable if AI not available
+    if not AI_AVAILABLE:
+        ai_check.config(state="disabled")
+
     # Quality selector
-    Label(ai_frame, text=" Quality:", bg="#F5F5F5").pack(side=LEFT)
+    quality_label = Label(ai_frame, text=" Quality:", bg="#F5F5F5")
+    quality_label.pack(side=LEFT)
     global_vars["ai_quality_var"] = StringVar(value="Accurate")
     ai_quality_combo = ttk.Combobox(
         ai_frame,
-        state="readonly",
+        state="readonly" if AI_AVAILABLE else "disabled",
         width=10,
         textvariable=global_vars["ai_quality_var"],
         values=("Fast", "Accurate", "Very accurate"),
     )
     ai_quality_combo.current(2)  # default to "Very accurate"
     ai_quality_combo.pack(side=LEFT, padx=(4, 0))
+
     # Model size selector
-    Label(ai_frame, text=" Model:", bg="#F5F5F5").pack(side=LEFT, padx=(8, 0))
+    model_label = Label(ai_frame, text=" Model:", bg="#F5F5F5")
+    model_label.pack(side=LEFT, padx=(8, 0))
     global_vars["ai_model_size_var"] = StringVar(value="Base")
     ai_model_combo = ttk.Combobox(
         ai_frame,
-        state="readonly",
+        state="readonly" if AI_AVAILABLE else "disabled",
         width=8,
         textvariable=global_vars["ai_model_size_var"],
         values=("Base", "Large"),
     )
     ai_model_combo.current(1)  # default to "Large"
     ai_model_combo.pack(side=LEFT, padx=(4, 0))
+
+    # Dim labels if AI not available
+    if not AI_AVAILABLE:
+        quality_label.config(fg="gray")
+        model_label.config(fg="gray")
+
     ai_frame.pack(fill=BOTH, expand=False, padx=10, pady=(0, 0))
 
     # Instructions section + tag textboxes area

@@ -1,43 +1,50 @@
-# Build with Nuitka (lite, excludes AI libs) + optional UPX compression
-# Requirements:
-#   - Python: pip/uv install nuitka (e.g., `uv pip install nuitka`)
-#   - UPX (optional): install via winget/scoop/choco or from https://github.com/upx/upx/releases and ensure upx.exe is on PATH
+param(
+  [switch]$ForceUPX
+)
+# Build with PyInstaller (lite, excludes AI libs)
+# Produces ezexif_lite.exe without torch/transformers for smallest binary size.
 
 $ErrorActionPreference = 'Stop'
-
-# Read version from pyproject.toml
-$pyproj = Get-Content -Raw -Path .\pyproject.toml
-if ($pyproj -match 'version\s*=\s*"([^"]+)"') {
-  $version = $Matches[1]
-} else {
-  $version = "0.1.0"
-}
 
 # Clean
 Remove-Item -Recurse -Force .\dist_lite, .\build_lite -ErrorAction SilentlyContinue
 
-# Compile (exclude torch/transformers; AI assist gracefully disabled due to lazy imports)
-python -m nuitka `
+# Compile (exclude AI libs; add data/hidden imports for core features)
+pyinstaller `
   --onefile `
-  --standalone `
-  --follow-imports `
-  --mingw64 `
-  --assume-yes-for-downloads `
-  --plugin-enable=tk-inter `
-  --include-data-files=ezexif.ico=ezexif.ico `
-  --output-dir=.\dist_lite `
-  --company-name="ezexif" `
-  --product-name="ezexif" `
-  --windows-console-mode=attach `
-  --product-version=$version `
-  --file-version=$version `
-  --nofollow-import-to=black,torch,transformers `
+  --clean `
+  --noupx `
+  --console `
+  --name ezexif_lite `
+  --icon ezexif.ico `
+  --distpath .\dist_lite `
+  --workpath .\build_lite `
+  --collect-all tkinterdnd2 `
+  --collect-all PIL `
+  --collect-all geopy `
+  --exclude-module black `
+  --exclude-module torch `
+  --exclude-module transformers `
   ezexif\ezexif.py
 
-# UPX compress
+# Optional: UPX compress the final exe only (safer than compressing DLLs)
 if (Get-Command upx -ErrorAction SilentlyContinue) {
-  $exe = Get-ChildItem -Recurse .\dist_lite -Filter ezexif.exe | Select-Object -First 1
-  if ($exe) { upx --best --lzma $exe.FullName }
+  $exe = Get-ChildItem -Recurse .\dist_lite -Filter ezexif_lite.exe | Select-Object -First 1
+  if ($exe) {
+    $upxArgs = @('--best','--lzma')
+    if ($ForceUPX) { 
+      $upxArgs += '--force' 
+    } else { 
+      Write-Host 'UPX: GuardCF likely enabled; defaulting to safe mode (no --force). Use -ForceUPX to override.' -ForegroundColor Yellow 
+    }
+    & upx @upxArgs $exe.FullName
+    $code = $LASTEXITCODE
+    if ($code -eq 0) {
+      Write-Host "UPX compression complete." -ForegroundColor Green
+    } else {
+      Write-Warning "UPX could not compress the binary (exit code $code). Skipping."
+    }
+  }
 } else {
-  Write-Host "UPX not found on PATH; skipping compression. To install: winget install --id UPX.UPX -e (or 'scoop install upx' / 'choco install upx')." -ForegroundColor Yellow
+  Write-Host "UPX not found on PATH; skipping exe compression." -ForegroundColor Yellow
 }
